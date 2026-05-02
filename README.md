@@ -1,0 +1,1 @@
+# nifty_analysis_bot
