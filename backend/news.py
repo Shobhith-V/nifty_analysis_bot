@@ -15,24 +15,29 @@ IST = pytz.timezone("Asia/Kolkata")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
 
 # Economic calendar events (hardcoded structure — replace with live API)
-ECONOMIC_CALENDAR_2025 = [
-    {"date": "2025-06-06", "event": "RBI Monetary Policy Decision", "impact": "HIGH", "currency": "INR"},
-    {"date": "2025-06-12", "event": "India CPI (May)", "impact": "MEDIUM", "currency": "INR"},
-    {"date": "2025-06-13", "event": "India WPI (May)", "impact": "MEDIUM", "currency": "INR"},
-    {"date": "2025-06-30", "event": "India GDP Q4 FY25", "impact": "HIGH", "currency": "INR"},
-    {"date": "2025-07-01", "event": "India Fiscal Year Start Q1", "impact": "LOW", "currency": "INR"},
-    {"date": "2025-08-06", "event": "RBI Monetary Policy Decision", "impact": "HIGH", "currency": "INR"},
-    {"date": "2025-09-12", "event": "India CPI (Aug)", "impact": "MEDIUM", "currency": "INR"},
-    {"date": "2025-10-07", "event": "RBI Monetary Policy Decision", "impact": "HIGH", "currency": "INR"},
-    {"date": "2025-12-05", "event": "RBI Monetary Policy Decision", "impact": "HIGH", "currency": "INR"},
+ECONOMIC_CALENDAR = [
+    # 2026 events
+    {"date": "2026-05-09", "event": "India CPI (Apr)", "impact": "MEDIUM", "currency": "INR"},
+    {"date": "2026-05-14", "event": "India WPI (Apr)", "impact": "MEDIUM", "currency": "INR"},
+    {"date": "2026-05-29", "event": "India GDP Q4 FY26", "impact": "HIGH", "currency": "INR"},
+    {"date": "2026-06-05", "event": "RBI Monetary Policy Decision", "impact": "HIGH", "currency": "INR"},
+    {"date": "2026-06-12", "event": "India CPI (May)", "impact": "MEDIUM", "currency": "INR"},
+    {"date": "2026-07-01", "event": "India Union Budget FY27", "impact": "HIGH", "currency": "INR"},
+    {"date": "2026-08-05", "event": "RBI Monetary Policy Decision", "impact": "HIGH", "currency": "INR"},
+    {"date": "2026-08-14", "event": "India CPI (Jul)", "impact": "MEDIUM", "currency": "INR"},
+    {"date": "2026-10-07", "event": "RBI Monetary Policy Decision", "impact": "HIGH", "currency": "INR"},
+    {"date": "2026-12-04", "event": "RBI Monetary Policy Decision", "impact": "HIGH", "currency": "INR"},
 ]
+
+# Keep old name as alias for any code that referenced it
+ECONOMIC_CALENDAR_2025 = ECONOMIC_CALENDAR
 
 
 async def get_economic_calendar(days_ahead: int = 7) -> List[Dict]:
     """Return upcoming economic events within `days_ahead` days."""
     today = datetime.now(IST).date()
     results = []
-    for event in ECONOMIC_CALENDAR_2025:
+    for event in ECONOMIC_CALENDAR:
         try:
             ev_date = date.fromisoformat(event["date"])
             delta = (ev_date - today).days

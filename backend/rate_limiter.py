@@ -35,6 +35,10 @@ class RateLimiter:
                         f"RateLimiter[{self.name}]: throttling for {sleep_time:.3f}s"
                     )
                     await asyncio.sleep(sleep_time)
+                    # Refresh now and clear expired entries after sleeping
+                    now = time.monotonic()
+                    while self.call_times and now - self.call_times[0] > 1.0:
+                        self.call_times.popleft()
 
             self.call_times.append(time.monotonic())
 

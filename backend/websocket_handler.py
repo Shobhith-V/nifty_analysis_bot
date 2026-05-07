@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Set, Callable
 import pytz
 
+import os
 from auth import get_session, is_authenticated, get_feed_token, authenticate
 from instruments import NIFTY_INDEX_TOKEN
 
@@ -178,12 +179,23 @@ async def connect_market_data():
                     continue
                 auth_fail_delay = 30.0  # reset on success
 
-            from SmartApi.SmartWebSocketV2 import SmartWebSocketV2
+            try:
+                from SmartApi.smartWebSocketV2 import SmartWebSocketV2
+            except ImportError:
+                from SmartApi.SmartWebSocketV2 import SmartWebSocketV2
 
             session = get_session()
             feed_token = get_feed_token()
             jwt_token = session.get("jwtToken")
-            api_key = session.get("_obj").api_key if session.get("_obj") else None
+            obj = session.get("_obj")
+
+            # Resolve api_key and client_code from session obj or env fallback
+            api_key = getattr(obj, "api_key", None) or os.getenv("ANGEL_API_KEY", "")
+            client_code = (
+                getattr(obj, "client_code", None)
+                or getattr(obj, "userId", None)
+                or os.getenv("ANGEL_CLIENT_CODE", "")
+            )
 
             if not all([jwt_token, feed_token, api_key]):
                 logger.error("Missing tokens for WebSocket connection")
@@ -193,10 +205,13 @@ async def connect_market_data():
             sws = SmartWebSocketV2(
                 auth_token=jwt_token,
                 api_key=api_key,
-                client_code=session.get("_obj").client_code if session.get("_obj") else "",
+                client_code=client_code,
                 feed_token=feed_token,
                 max_retries=3,
             )
+
+            # Capture running loop now (in async context) before thread callbacks use it
+            _loop = asyncio.get_running_loop()
 
             def on_open(wsapp):
                 logger.info("SmartWebSocketV2 connected — subscribing to NIFTY")
@@ -206,7 +221,7 @@ async def connect_market_data():
 
             def on_data(wsapp, message):
                 asyncio.run_coroutine_threadsafe(
-                    _handle_tick(message), asyncio.get_event_loop()
+                    _handle_tick(message), _loop
                 )
 
             def on_error(wsapp, error):
@@ -228,8 +243,8 @@ async def connect_market_data():
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, sws.connect)
 
-        except ImportError:
-            logger.error("SmartApi package not installed — WebSocket disabled")
+        except ImportError as ie:
+            logger.error(f"SmartApi WebSocket import failed: {ie} — WebSocket disabled")
             return
         except Exception as e:
             logger.error(f"WebSocket connection error: {e}", exc_info=True)

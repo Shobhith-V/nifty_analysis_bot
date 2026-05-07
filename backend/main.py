@@ -4,13 +4,16 @@ ANALYSIS ONLY. No order placement.
 """
 
 import asyncio
+import json
 import logging
+import math
 import os
 import sys
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Any
+from pydantic import BaseModel
 from pathlib import Path
 
 import pytz
@@ -20,6 +23,27 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Quer
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
+
+
+class _SafeJSONResponse(JSONResponse):
+    """JSONResponse that converts NaN/Inf to null instead of crashing."""
+    def render(self, content: Any) -> bytes:
+        return json.dumps(
+            _sanitize(content),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+
+
+def _sanitize(obj: Any) -> Any:
+    """Recursively replace NaN/Inf floats with None."""
+    if isinstance(obj, float):
+        return None if (math.isnan(obj) or math.isinf(obj)) else obj
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize(v) for v in obj]
+    return obj
 
 load_dotenv()
 
@@ -62,7 +86,8 @@ from websocket_handler import (
     get_latest_ltp,
     connect_market_data,
 )
-from scheduler import start_scheduler, stop_scheduler
+from scheduler import start_scheduler, stop_scheduler, register_state_refresh
+from backtest import run_backtest
 
 # ── Lifespan ───────────────────────────────────────────────────────────────
 @asynccontextmanager
@@ -101,6 +126,7 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(connect_market_data())
     start_scheduler()
+    register_state_refresh(_refresh_state)   # RSI/MACD/signals refresh every 2 min
     logger.info("Startup complete. Dashboard ready.")
 
     yield  # ← application runs here
@@ -116,6 +142,7 @@ app = FastAPI(
     version="1.0.0",
     description="Professional trading dashboard — ANALYSIS ONLY",
     lifespan=lifespan,
+    default_response_class=_SafeJSONResponse,
 )
 
 app.add_middleware(
@@ -326,6 +353,99 @@ async def polymarket():
     return await get_polymarket_summary()
 
 
+# ── Chat (Claude AI) ──────────────────────────────────────────────────────
+
+class ChatRequest(BaseModel):
+    question: str
+
+
+@app.post("/api/chat")
+async def chat(req: ChatRequest):
+    """Answer a market question using Claude with live context."""
+    import os
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return {
+            "answer": "⚠ ANTHROPIC_API_KEY not set in .env — add your key from console.anthropic.com to enable AI chat.",
+            "model": "unavailable",
+        }
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+
+        # Build market context snapshot
+        ltp = get_latest_ltp() or (_state["today_candles"][-1]["close"] if _state["today_candles"] else "N/A")
+        cpr_d = _state.get("cpr", {}).get("daily", {})
+        ind = _state.get("indicators", {})
+        gap = _state.get("gap_info", {})
+        expiry = get_expiry_info()
+        global_snap = get_cached_global_markets()
+        sgx = global_snap.get("SGX_NIFTY") or global_snap.get("^NSEI", {})
+
+        context = f"""You are an expert Nifty 50 intraday analyst. Answer in 2-4 concise sentences.
+
+Current market snapshot (live):
+- NIFTY 50 LTP: {ltp}
+- Session: {get_session_status()} | Market open: {is_market_open()}
+- Gap: {gap.get('gap_type','N/A')} {gap.get('gap_pct',0):.2f}%
+- CPR: Pivot={cpr_d.get('pivot','N/A')} BC={cpr_d.get('bc','N/A')} TC={cpr_d.get('tc','N/A')}
+- Price position: {_state.get('cpr',{}).get('price_position','N/A')}
+- RSI(14): {ind.get('rsi14','N/A')} | VWAP: {ind.get('vwap','N/A')}
+- MACD hist: {ind.get('macd_hist','N/A')} | Above VWAP: {ind.get('above_vwap','N/A')}
+- SGX/GIFT Nifty: {sgx.get('price','N/A')} ({sgx.get('change_pct',0):+.2f}%)
+- Expiry: {expiry['expiry_type']} in {expiry['days_to_expiry']} days
+- Today's signals: {[s.get('type') for s in _state.get('signals',[])[:3]]}
+
+ANALYSIS ONLY — this bot does not place orders."""
+
+        message = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=256,
+            messages=[
+                {"role": "user", "content": f"{context}\n\nUser question: {req.question}"}
+            ],
+        )
+        answer = message.content[0].text if message.content else "No response."
+        return {
+            "answer": answer,
+            "model": "claude-haiku-4-5",
+            "time": datetime.now(IST).strftime("%H:%M:%S"),
+        }
+
+    except Exception as e:
+        logger.error(f"Chat error: {e}", exc_info=True)
+        return {"answer": f"Error: {str(e)}", "model": "error"}
+
+
+# ── Backtest ───────────────────────────────────────────────────────────────
+
+class BacktestRequest(BaseModel):
+    dsl: str = ""
+    days: int = 60
+    capital: float = 100000
+
+
+@app.post("/api/backtest")
+async def backtest(req: BacktestRequest):
+    """Run backtest on historical daily candles with the given strategy DSL."""
+    try:
+        candles = _state.get("daily_history", [])
+        if not candles or len(candles) < 5:
+            # Try to fetch fresh
+            candles = await fetch_historical_days(max(req.days, 30))
+
+        # Limit to requested period
+        if len(candles) > req.days:
+            candles = candles[-req.days:]
+
+        result = run_backtest(candles, dsl_text=req.dsl, initial_capital=req.capital)
+        return result
+    except Exception as e:
+        logger.error(f"Backtest error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ── Dashboard summary ──────────────────────────────────────────────────────
 @app.get("/api/dashboard")
 async def dashboard_summary():
@@ -390,10 +510,15 @@ async def ws_live(websocket: WebSocket):
         unsubscribe_from_stream(queue)
 
 
-# ── Serve frontend static files (production) ──────────────────────────────
+# ── Serve frontend static files ────────────────────────────────────────────
+# Production: built Vite dist/ takes priority.
+# Development: serve raw frontend/ folder directly (pure HTML+CDN React setup).
 frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"
+frontend_raw  = Path(__file__).parent.parent / "frontend"
 if frontend_dist.exists():
     app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
+elif frontend_raw.exists():
+    app.mount("/", StaticFiles(directory=str(frontend_raw), html=True), name="frontend")
 
 
 if __name__ == "__main__":

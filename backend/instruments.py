@@ -178,8 +178,8 @@ def get_expiry_info() -> dict:
     }
 
 
-# NSE holiday list 2025 (hardcoded as per spec)
-NSE_HOLIDAYS_2025 = {
+# NSE holiday list (update annually from NSE circular)
+NSE_HOLIDAYS = {
     date(2025, 1, 26),   # Republic Day
     date(2025, 3, 14),   # Holi
     date(2025, 4, 14),   # Dr. Ambedkar Jayanti / Ram Navami
@@ -194,6 +194,21 @@ NSE_HOLIDAYS_2025 = {
     date(2025, 12, 25),  # Christmas
 }
 
+NSE_HOLIDAYS_2026 = {
+    date(2026, 1, 26),   # Republic Day
+    date(2026, 3, 30),   # Holi
+    date(2026, 4, 3),    # Good Friday
+    date(2026, 4, 14),   # Dr. Ambedkar Jayanti
+    date(2026, 5, 1),    # Maharashtra Day
+    date(2026, 8, 14),   # Independence Day (observed; Aug 15 is Saturday)
+    date(2026, 10, 2),   # Gandhi Jayanti
+    date(2026, 10, 29),  # Diwali Laxmi Puja (approximate — NSE to confirm)
+    date(2026, 11, 14),  # Gurunanak Jayanti (approximate)
+    date(2026, 12, 25),  # Christmas
+}
+
+NSE_HOLIDAYS = NSE_HOLIDAYS | NSE_HOLIDAYS_2026
+
 
 def is_market_open(dt: Optional[datetime] = None) -> bool:
     """Returns True if NSE market is currently open."""
@@ -205,7 +220,7 @@ def is_market_open(dt: Optional[datetime] = None) -> bool:
         return False
 
     # Holiday check
-    if d in NSE_HOLIDAYS_2025:
+    if d in NSE_HOLIDAYS:
         return False
 
     market_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
@@ -218,7 +233,7 @@ def get_session_status(dt: Optional[datetime] = None) -> str:
     now = dt or datetime.now(IST)
     d = now.date()
 
-    if d.weekday() >= 5 or d in NSE_HOLIDAYS_2025:
+    if d.weekday() >= 5 or d in NSE_HOLIDAYS:
         return "CLOSED"
 
     t = now.time()

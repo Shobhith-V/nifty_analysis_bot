@@ -169,9 +169,12 @@ async def fetch_historical(
 
 
 async def fetch_today_candles(interval: str = "1m") -> List[Dict]:
-    """Fetch today's candles from 9:15 AM IST."""
+    """Fetch today's candles from 9:15 AM IST. Returns empty list before market open."""
     now = datetime.now(IST)
     from_dt = now.replace(hour=9, minute=15, second=0, microsecond=0)
+    if now < from_dt:
+        logger.debug("fetch_today_candles: before 9:15 AM — returning empty")
+        return []
     return await fetch_historical(
         from_dt=from_dt, to_dt=now, interval=interval, days=0
     )

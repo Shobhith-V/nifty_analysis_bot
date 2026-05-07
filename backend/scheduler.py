@@ -78,6 +78,26 @@ def start_scheduler():
     logger.info("APScheduler started with jobs: global_markets, instrument_master, token_refresh")
 
 
+def register_state_refresh(coro_fn):
+    """Register a coroutine to run every 2 minutes during market hours."""
+    if _scheduler is None or not _scheduler.running:
+        logger.warning("Scheduler not running — cannot register state refresh")
+        return
+
+    async def _job():
+        if is_market_open():
+            await coro_fn()
+
+    _scheduler.add_job(
+        _job,
+        IntervalTrigger(minutes=2, timezone=IST),
+        id="state_refresh",
+        replace_existing=True,
+        max_instances=1,
+    )
+    logger.info("Registered state_refresh job (every 2 min during market hours)")
+
+
 def stop_scheduler():
     global _scheduler
     if _scheduler and _scheduler.running:

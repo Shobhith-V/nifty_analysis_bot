@@ -92,6 +92,10 @@ async def fetch_global_markets() -> Dict[str, Any]:
             logger.warning("yfinance returned no data (likely rate-limited) — using cache")
             return _cache
 
+        # SGX_NIFTY alias: used by signals.py bias engine
+        if "^NSEI" in result:
+            result["SGX_NIFTY"] = result["^NSEI"]
+
         # Build correlation insight
         result["insights"] = _build_insights(result)
         result["last_updated"] = datetime.now(IST).isoformat()

@@ -43,8 +43,11 @@ def calculate_rsi(series: pd.Series, period: int = 14) -> pd.Series:
     loss = (-delta).clip(lower=0)
     avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
     avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
+    # avg_loss=0 means all gains → RSI=100; avoid division by zero
     rs = avg_gain / avg_loss.replace(0, np.nan)
     rsi = 100 - (100 / (1 + rs))
+    rsi = rsi.fillna(100.0)          # NaN from zero-loss periods → RSI 100
+    rsi = rsi.clip(lower=0, upper=100)
     return rsi.round(2)
 
 
@@ -74,6 +77,12 @@ def calculate_bollinger_bands(
     return upper, mid.round(2), lower
 
 
+def _safe_list(series: pd.Series) -> list:
+    """Convert series to list, replacing NaN/Inf with None."""
+    return [None if (v is None or (isinstance(v, float) and (np.isnan(v) or np.isinf(v)))) else v
+            for v in series.tolist()]
+
+
 def calculate_all_indicators(df: pd.DataFrame) -> Dict:
     """Compute all indicators and return as dict of lists (for JSON serialization)."""
     if df.empty:
@@ -89,18 +98,18 @@ def calculate_all_indicators(df: pd.DataFrame) -> Dict:
     bb_upper, bb_mid, bb_lower = calculate_bollinger_bands(close)
 
     return {
-        "vwap": vwap.tolist(),
-        "ema9": ema9.tolist(),
-        "ema21": ema21.tolist(),
-        "ema50": ema50.tolist(),
-        "rsi14": rsi14.tolist(),
-        "macd": macd_line.tolist(),
-        "macd_signal": macd_sig.tolist(),
-        "macd_hist": macd_hist.tolist(),
-        "bb_upper": bb_upper.tolist(),
-        "bb_mid": bb_mid.tolist(),
-        "bb_lower": bb_lower.tolist(),
-        "timestamps": df["time"].tolist(),
+        "vwap":        _safe_list(vwap),
+        "ema9":        _safe_list(ema9),
+        "ema21":       _safe_list(ema21),
+        "ema50":       _safe_list(ema50),
+        "rsi14":       _safe_list(rsi14),
+        "macd":        _safe_list(macd_line),
+        "macd_signal": _safe_list(macd_sig),
+        "macd_hist":   _safe_list(macd_hist),
+        "bb_upper":    _safe_list(bb_upper),
+        "bb_mid":      _safe_list(bb_mid),
+        "bb_lower":    _safe_list(bb_lower),
+        "timestamps":  df["time"].tolist(),
     }
 
 
