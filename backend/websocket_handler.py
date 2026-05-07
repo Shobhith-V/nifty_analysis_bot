@@ -207,7 +207,8 @@ async def connect_market_data():
                 api_key=api_key,
                 client_code=client_code,
                 feed_token=feed_token,
-                max_retries=3,
+                max_retry_attempt=3,
+                retry_delay=5,
             )
 
             # Capture running loop now (in async context) before thread callbacks use it
@@ -220,19 +221,23 @@ async def connect_market_data():
                 sws.subscribe("market_data", MODE_SNAP_QUOTE, _default_tokens)
 
             def on_data(wsapp, message):
+                # v1.5.x passes already-parsed dict; _handle_tick handles both dict and raw
                 asyncio.run_coroutine_threadsafe(
                     _handle_tick(message), _loop
                 )
 
-            def on_error(wsapp, error):
-                logger.error(f"WebSocket error: {error}")
+            def on_error(error_type, error_msg):
+                # v1.5.x signature: (error_type_str, error_msg_str) — no wsapp
+                logger.error(f"WebSocket error [{error_type}]: {error_msg}")
 
-            def on_close(wsapp, close_status, close_msg):
-                logger.warning(f"WebSocket closed: {close_status} {close_msg}")
+            def on_close(wsapp):
+                # v1.5.x signature: (wsapp,) — no close_status/close_msg
+                logger.warning("WebSocket closed by server")
+                global _connection_count
                 _connection_count = max(0, _connection_count - 1)
 
-            sws.on_open = on_open
-            sws.on_data = on_data
+            sws.on_open  = on_open
+            sws.on_data  = on_data
             sws.on_error = on_error
             sws.on_close = on_close
 

@@ -8,7 +8,7 @@ function RightRail() {
 
   return (
     <aside style={{
-      width: 320, flexShrink: 0,
+      width: 300, flexShrink: 0,
       borderLeft: '1px solid var(--hairline)',
       display: 'flex', flexDirection: 'column',
       gap: 8, padding: 8,

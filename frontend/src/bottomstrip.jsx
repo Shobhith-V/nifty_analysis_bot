@@ -38,9 +38,10 @@ function BottomStrip() {
 
   return (
     <div style={{
-      flexShrink: 0, height: 220, borderTop: '1px solid var(--hairline)',
+      flexShrink: 0, height: 200, borderTop: '1px solid var(--hairline)',
       display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 0,
-      background: 'var(--bg)'
+      background: 'var(--bg)',
+      minHeight: 0
     }}>
       {/* AI Commentary / Chat */}
       <div className="panel-flush" style={{ borderRight: '1px solid var(--hairline)', display: 'flex', flexDirection: 'column' }}>
@@ -83,7 +84,7 @@ function BottomStrip() {
         </div>
       </div>
 
-      {/* News + Polymarket tabs */}
+      {/* News + Polymarket preview (full pages live in top-level tabs) */}
       <div className="panel-flush" style={{ borderRight: '1px solid var(--hairline)', display: 'flex', flexDirection: 'column' }}>
         <div className="panel-h">
           <div className="lhs">
@@ -91,10 +92,12 @@ function BottomStrip() {
             <button className={"tab " + (tab === 'p' ? "active" : "")} style={{ height: 24, padding: '0 6px', fontSize: 9 }} onClick={() => setTab('p')}>Polymarket</button>
             <button className={"tab " + (tab === 'cal' ? "active" : "")} style={{ height: 24, padding: '0 6px', fontSize: 9 }} onClick={() => setTab('cal')}>Events</button>
           </div>
-          <div className="rhs"><span>filtered: NIFTY · INDIA</span></div>
+          <div className="rhs">
+            <span>auto · 10s</span>
+          </div>
         </div>
         <div style={{ flex: 1, overflow: 'auto' }}>
-          {tab !== 'p' && tab !== 'cal' && NEWS.map((n, i) => {
+          {tab !== 'p' && tab !== 'cal' && (window.NEWS_LIVE && window.NEWS_LIVE.length ? window.NEWS_LIVE : NEWS).slice(0, 8).map((n, i) => {
             const col = n.impact === 'bullish' ? 'var(--green)' : n.impact === 'bearish' ? 'var(--red)' : 'var(--dim)';
             return (
               <div key={i} style={{ padding: '8px 10px', borderBottom: '1px solid var(--hairline-soft)' }}>
@@ -107,7 +110,7 @@ function BottomStrip() {
               </div>
             );
           })}
-          {tab === 'p' && POLY.map((p, i) => (
+          {tab === 'p' && (window.POLY_LIVE && window.POLY_LIVE.length ? window.POLY_LIVE : POLY).map((p, i) => (
             <div key={i} style={{ padding: '10px', borderBottom: '1px solid var(--hairline-soft)' }}>
               <div style={{ fontSize: 11, color: 'var(--fg-2)', marginBottom: 6, lineHeight: 1.4 }}>{p.q}</div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>

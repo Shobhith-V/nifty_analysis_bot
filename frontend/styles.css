@@ -55,13 +55,14 @@ input, select, textarea { font-family: inherit; color: inherit; }
 /* Subtle background grid for the whole app frame */
 .app-frame {
   width: 100vw;
-  min-height: 100vh;
+  height: 100vh;
   background:
     radial-gradient(ellipse at top left, oklch(0.22 0.02 240 / 0.5), transparent 60%),
     radial-gradient(ellipse at bottom right, oklch(0.22 0.02 280 / 0.4), transparent 60%),
     var(--bg);
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 /* Hairline */
@@ -323,6 +324,11 @@ input, select, textarea { font-family: inherit; color: inherit; }
   animation: marquee 90s linear infinite;
 }
 .marquee-pause:hover .marquee { animation-play-state: paused; }
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
 
 /* Mini bar (for confidence, etc) */
 .bar { position: relative; height: 6px; background: var(--bg-2); border: 1px solid var(--hairline-soft); border-radius: 1px; overflow: hidden; }

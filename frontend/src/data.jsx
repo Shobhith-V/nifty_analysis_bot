@@ -495,10 +495,90 @@ Object.assign(window, {
   window._niftyInitLive = initLiveData;
   window._niftyRefreshIndicators = refreshIndicators;
 
+  // Fetch news + polymarket and expose live arrays
+  async function refreshAux() {
+    try {
+      const [news, poly] = await Promise.all([
+        fetch(`${API_BASE}/api/news`).then(r => r.json()).catch(() => null),
+        fetch(`${API_BASE}/api/polymarket`).then(r => r.json()).catch(() => null),
+      ]);
+
+      // ── News ─────────────────────────────────────────────
+      // Backend may return either an array of items or { items: [...] }
+      const newsItems = Array.isArray(news) ? news
+        : (news && Array.isArray(news.items)) ? news.items
+        : (news && Array.isArray(news.headlines)) ? news.headlines
+        : (news && Array.isArray(news.news)) ? news.news
+        : null;
+
+      if (newsItems && newsItems.length) {
+        const fmtAge = (ts) => {
+          if (!ts) return '—';
+          const d = (typeof ts === 'number') ? new Date(ts * (ts < 1e12 ? 1000 : 1)) : new Date(ts);
+          if (isNaN(d.getTime())) return String(ts);
+          const diffM = Math.max(0, Math.round((Date.now() - d.getTime()) / 60000));
+          if (diffM < 60) return `${diffM}m`;
+          const h = Math.floor(diffM / 60); if (h < 24) return `${h}h`;
+          return `${Math.floor(h/24)}d`;
+        };
+        const inferImpact = (txt) => {
+          const s = String(txt || '').toLowerCase();
+          const bull = ['rally','beat','surge','rise','gain','growth','buy','positive','upgrade','outperform','bullish'];
+          const bear = ['fall','drop','plunge','miss','cut','downgrade','negative','sell','bearish','warning'];
+          if (bull.some(w => s.includes(w))) return 'bullish';
+          if (bear.some(w => s.includes(w))) return 'bearish';
+          return 'neutral';
+        };
+        window.NEWS_LIVE = newsItems.map(n => ({
+          src: n.source || n.src || n.publisher || 'News',
+          t:   n.t || n.age || fmtAge(n.published_at || n.timestamp || n.time || n.date),
+          headline: n.title || n.headline || n.text || '',
+          summary: n.summary || n.description || '',
+          impact:  n.impact || n.sentiment || inferImpact(n.title || n.headline || ''),
+          url:     n.url || n.link || '',
+        }));
+      }
+
+      // ── Polymarket ───────────────────────────────────────
+      const polyItems = Array.isArray(poly) ? poly
+        : (poly && Array.isArray(poly.markets)) ? poly.markets
+        : (poly && Array.isArray(poly.items)) ? poly.items
+        : null;
+      if (polyItems && polyItems.length) {
+        const toCents = (v) => {
+          if (v == null) return 50;
+          const n = (typeof v === 'string') ? parseFloat(v) : Number(v);
+          if (isNaN(n)) return 50;
+          return n <= 1 ? Math.round(n * 100) : Math.round(n);
+        };
+        const fmtVol = (v) => {
+          if (v == null) return '—';
+          if (typeof v === 'string' && v.startsWith('$')) return v;
+          const n = Number(v); if (isNaN(n)) return String(v);
+          if (n >= 1e6) return `$${(n/1e6).toFixed(1)}M`;
+          if (n >= 1e3) return `$${(n/1e3).toFixed(0)}k`;
+          return `$${n.toFixed(0)}`;
+        };
+        window.POLY_LIVE = polyItems.map(p => ({
+          q:   p.question || p.q || p.title || '',
+          yes: toCents(p.yes_price ?? p.yes ?? p.probability ?? p.prob),
+          vol: p.vol || p.volume_str || fmtVol(p.volume ?? p.volume_24h),
+          url: p.url || p.slug ? (p.url || `https://polymarket.com/event/${p.slug}`) : '',
+        }));
+      }
+
+      document.dispatchEvent(new CustomEvent('nifty-news-ready'));
+      document.dispatchEvent(new CustomEvent('nifty-poly-ready'));
+    } catch (e) { /* silent */ }
+  }
+  window._niftyRefreshAux = refreshAux;
+
   function autoStart() {
     setTimeout(initLiveData, 200);
-    // Re-poll indicators every 90 seconds (backend refreshes every 2 min)
-    setInterval(refreshIndicators, 90 * 1000);
+    setTimeout(refreshAux, 400);
+    // 10s cadence — lightweight indicator + dashboard refresh, news, polymarket
+    setInterval(refreshIndicators, 10 * 1000);
+    setInterval(refreshAux, 10 * 1000);
   }
 
   if (document.readyState === 'complete') {
