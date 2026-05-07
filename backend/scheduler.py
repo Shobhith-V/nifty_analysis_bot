@@ -15,6 +15,9 @@ from apscheduler.triggers.interval import IntervalTrigger
 from global_markets import fetch_global_markets
 from instruments import download_instrument_master, is_market_open
 from auth import should_refresh, refresh_token
+from news import refresh_news
+from nse_deals import refresh_all as refresh_nse
+from dune import fetch_polymarket_signals
 
 logger = logging.getLogger(__name__)
 IST = pytz.timezone("Asia/Kolkata")
@@ -37,6 +40,22 @@ async def _job_token_refresh():
     if should_refresh():
         logger.info("Scheduler: refreshing auth token")
         await refresh_token()
+
+
+async def _job_news():
+    logger.debug("Scheduler: refreshing news feeds")
+    await refresh_news()
+
+
+async def _job_nse_deals():
+    if is_market_open():
+        logger.debug("Scheduler: refreshing NSE block deals / FII-DII")
+        await refresh_nse()
+
+
+async def _job_dune():
+    logger.debug("Scheduler: refreshing Dune signals")
+    await fetch_polymarket_signals()
 
 
 def start_scheduler():
@@ -74,8 +93,29 @@ def start_scheduler():
         max_instances=1,
     )
 
+    # News RSS: every 5 min
+    _scheduler.add_job(
+        _job_news,
+        IntervalTrigger(minutes=5, timezone=IST),
+        id="news_rss", replace_existing=True, max_instances=1,
+    )
+
+    # NSE block deals / FII-DII / unusual volume: every 15 min, market hours only
+    _scheduler.add_job(
+        _job_nse_deals,
+        IntervalTrigger(minutes=15, timezone=IST),
+        id="nse_deals", replace_existing=True, max_instances=1,
+    )
+
+    # Dune Analytics: every 30 min
+    _scheduler.add_job(
+        _job_dune,
+        IntervalTrigger(minutes=30, timezone=IST),
+        id="dune_signals", replace_existing=True, max_instances=1,
+    )
+
     _scheduler.start()
-    logger.info("APScheduler started with jobs: global_markets, instrument_master, token_refresh")
+    logger.info("APScheduler started: global_markets, instrument_master, token_refresh, news_rss, nse_deals, dune_signals")
 
 
 def register_state_refresh(coro_fn):

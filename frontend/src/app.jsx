@@ -20,23 +20,17 @@ function App() {
 
   React.useEffect(() => {
     const bump = () => setDataVersion(v => v + 1);
-    let tickTimer = null;
-    const onTick = () => {
-      if (tickTimer) return;
-      tickTimer = setTimeout(() => { tickTimer = null; bump(); }, 2000);
-    };
+    // Tick updates handled locally inside Chart — no global re-render on each tick.
+    // App re-renders on candle close (new bar finalized) and data-ready (initial load).
     document.addEventListener('nifty-data-ready', bump);
-    document.addEventListener('nifty-candle', bump);
-    document.addEventListener('nifty-tick', onTick);
+    document.addEventListener('nifty-candle',     bump);
     document.addEventListener('nifty-news-ready', bump);
     document.addEventListener('nifty-poly-ready', bump);
     return () => {
       document.removeEventListener('nifty-data-ready', bump);
-      document.removeEventListener('nifty-candle', bump);
-      document.removeEventListener('nifty-tick', onTick);
+      document.removeEventListener('nifty-candle',     bump);
       document.removeEventListener('nifty-news-ready', bump);
       document.removeEventListener('nifty-poly-ready', bump);
-      if (tickTimer) clearTimeout(tickTimer);
     };
   }, []);
 

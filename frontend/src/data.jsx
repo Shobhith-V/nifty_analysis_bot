@@ -448,13 +448,16 @@ Object.assign(window, {
     ws.onerror = () => { console.warn('[NiftyBot] WS error'); };
   }
 
-  // Lightweight periodic refresh — only indicators + dashboard, not candles
+  // Lightweight periodic refresh — indicators + signals only, NOT dashboard
+  // Dashboard is skipped here to avoid triggering getCandleData on every poll.
+  // The backend scheduler handles full state refresh every 2 min.
   async function refreshIndicators() {
     try {
-      const [dashboard, indSeries] = await Promise.all([
-        fetch(`${API_BASE}/api/dashboard`).then(r => r.json()).catch(() => null),
+      const [indSeries, signals] = await Promise.all([
         fetch(`${API_BASE}/api/indicators`).then(r => r.json()).catch(() => null),
+        fetch(`${API_BASE}/api/signals/latest`).then(r => r.json()).catch(() => null),
       ]);
+      const dashboard = null;  // not fetched in periodic poll
 
       if (indSeries && !indSeries.error && indSeries.vwap) {
         const last = arr => arr && arr.length ? arr[arr.length - 1] : null;
@@ -468,22 +471,22 @@ Object.assign(window, {
         if (indSeries.macd_hist)   { window.MACD_HIST   = indSeries.macd_hist; }
       }
 
-      if (dashboard && !dashboard.detail) {
-        if (dashboard.indicators && dashboard.indicators.price != null) {
-          const ind = dashboard.indicators;
-          window.LTP     = ind.price    || window.LTP;
-          window.VWAP    = ind.vwap     || window.VWAP;
-          window.RSI_NOW = ind.rsi14    || window.RSI_NOW;
-        }
-        if (dashboard.signals && dashboard.signals.length > 0) {
-          window.SIGNALS = dashboard.signals.map(s => {
+      // Update signals + bias from /api/signals/latest (no historical API call)
+      if (signals && signals.signals) {
+        if (signals.signals.length > 0) {
+          window.SIGNALS = signals.signals.map(s => {
             const ts = new Date(s.time * 1000);
             return { t: `${String(ts.getHours()).padStart(2,'0')}:${String(ts.getMinutes()).padStart(2,'0')}`, type: s.type, dir: s.direction, conf: s.confidence, px: s.price, desc: s.description };
           });
         }
-        if (dashboard.bias) {
-          window.BIAS_LABEL = dashboard.bias.bias || window.BIAS_LABEL;
-          window.BIAS_SCORE = Math.min(10, Math.abs(dashboard.bias.score) * 1.5) || window.BIAS_SCORE;
+        if (signals.bias) {
+          window.BIAS_LABEL = signals.bias.bias || window.BIAS_LABEL;
+          window.BIAS_SCORE = Math.min(10, Math.abs(signals.bias.score) * 1.5) || window.BIAS_SCORE;
+        }
+        if (signals.indicators && signals.indicators.price != null) {
+          window.LTP     = signals.indicators.price || window.LTP;
+          window.VWAP    = signals.indicators.vwap  || window.VWAP;
+          window.RSI_NOW = signals.indicators.rsi14 || window.RSI_NOW;
         }
       }
 
@@ -561,9 +564,12 @@ Object.assign(window, {
         };
         window.POLY_LIVE = polyItems.map(p => ({
           q:   p.question || p.q || p.title || '',
-          yes: toCents(p.yes_price ?? p.yes ?? p.probability ?? p.prob),
-          vol: p.vol || p.volume_str || fmtVol(p.volume ?? p.volume_24h),
-          url: p.url || p.slug ? (p.url || `https://polymarket.com/event/${p.slug}`) : '',
+          // Backend returns yes_pct (e.g. 16.4) — must check it first
+          yes: toCents(p.yes_pct ?? p.yes_price ?? p.yes ?? p.probability ?? p.prob),
+          // Prefer 24h volume for relevance
+          vol: p.vol || p.volume_str || fmtVol(p.volume_24h ?? p.volume),
+          url: p.url || (p.slug ? `https://polymarket.com/event/${p.slug}` : ''),
+          cat: p.category || '',
         }));
       }
 

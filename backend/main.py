@@ -77,8 +77,13 @@ from cpr import build_cpr_response
 from indicators import get_current_indicators, calculate_all_indicators, candles_to_df, get_vwap_series, calculate_volume_profile
 from signals import analyze_gap, check_gap_fill, calculate_orb, build_signals, analyze_volume, calculate_bias
 from global_markets import fetch_global_markets, get_cached_global_markets
-from news import get_news_summary
+from news import get_news_summary, refresh_news
 from polymarket import get_polymarket_summary
+from nse_deals import (
+    fetch_block_deals, fetch_bulk_deals,
+    fetch_fii_dii, fetch_unusual_volume, refresh_all as refresh_nse,
+)
+from dune import fetch_polymarket_signals
 from websocket_handler import (
     subscribe_to_stream,
     unsubscribe_from_stream,
@@ -88,6 +93,19 @@ from websocket_handler import (
 )
 from scheduler import start_scheduler, stop_scheduler, register_state_refresh
 from backtest import run_backtest
+
+
+async def _startup_aux():
+    """Non-critical startup tasks — run in background so they don't delay boot."""
+    try:
+        await refresh_news()
+    except Exception as e:
+        logger.warning(f"Startup news fetch failed: {e}")
+    try:
+        await refresh_nse()
+    except Exception as e:
+        logger.warning(f"Startup NSE fetch failed: {e}")
+
 
 # ── Lifespan ───────────────────────────────────────────────────────────────
 @asynccontextmanager
@@ -115,7 +133,7 @@ async def lifespan(app: FastAPI):
     try:
         _state["prev_day"] = await fetch_previous_day_ohlc()
         _state["daily_history"] = await fetch_historical_days(30)
-        await _refresh_state()
+        await _refresh_state(force=True)   # startup always fetches fresh
     except Exception as e:
         logger.error(f"Initial data fetch failed: {e}")
 
@@ -123,6 +141,9 @@ async def lifespan(app: FastAPI):
         _state["global_markets"] = await fetch_global_markets()
     except Exception as e:
         logger.error(f"Global markets fetch failed: {e}")
+
+    # Kick off news and NSE in background — non-blocking at startup
+    asyncio.create_task(_startup_aux())
 
     asyncio.create_task(connect_market_data())
     start_scheduler()
@@ -171,12 +192,23 @@ _state = {
     "last_refresh": None,
 }
 
+# Minimum gap between historical API candle fetches (Angel One rate limits)
+_CANDLE_FETCH_COOLDOWN = 55  # seconds — 1m candles don't change faster than this
+_last_candle_fetch: float = 0.0
 
-async def _refresh_state():
-    """Refresh all derived state from latest candle data."""
+
+async def _refresh_state(force: bool = False):
+    """Refresh all derived state. Skips historical API call if fetched recently."""
+    global _last_candle_fetch
     try:
-        candles = await fetch_today_candles("1m")
-        _state["today_candles"] = candles
+        now_ts = time.time()
+        if force or (now_ts - _last_candle_fetch) >= _CANDLE_FETCH_COOLDOWN:
+            candles = await fetch_today_candles("1m")
+            if candles:                        # keep stale candles if fetch returned empty
+                _state["today_candles"] = candles
+                _last_candle_fetch = now_ts
+        else:
+            candles = _state["today_candles"]  # use cached
 
         prev = _state.get("prev_day")
         if not prev:
@@ -353,69 +385,174 @@ async def polymarket():
     return await get_polymarket_summary()
 
 
-# ── Chat (Claude AI) ──────────────────────────────────────────────────────
+# ── NSE institutional data ─────────────────────────────────────────────────
+@app.get("/api/block-deals")
+async def block_deals():
+    return {"data": await fetch_block_deals(), "count": len(await fetch_block_deals())}
+
+
+@app.get("/api/bulk-deals")
+async def bulk_deals():
+    data = await fetch_bulk_deals()
+    return {"data": data, "count": len(data)}
+
+
+@app.get("/api/fii-dii")
+async def fii_dii():
+    data = await fetch_fii_dii()
+    today = data[0] if data else {}
+    fii_net = today.get("fii_net", 0) or 0
+    return {
+        "data": data,
+        "today": today,
+        "fii_net_today": fii_net,
+        "dii_net_today": today.get("dii_net", 0),
+        "bias": "FII_BUYING" if fii_net > 0 else ("FII_SELLING" if fii_net < 0 else "NEUTRAL"),
+    }
+
+
+@app.get("/api/unusual-volume")
+async def unusual_volume():
+    data = await fetch_unusual_volume()
+    return {"data": data, "count": len(data), "threshold": "3× 20-day avg"}
+
+
+@app.get("/api/nse/all")
+async def nse_all():
+    """Single endpoint for all NSE institutional data."""
+    blocks = await fetch_block_deals()
+    bulks  = await fetch_bulk_deals()
+    fiidii = await fetch_fii_dii()
+    uvol   = await fetch_unusual_volume()
+    return {
+        "block_deals":    blocks,
+        "bulk_deals":     bulks,
+        "fii_dii":        fiidii,
+        "unusual_volume": uvol,
+        "last_updated":   datetime.now(IST).isoformat(),
+    }
+
+
+# ── Dune Analytics ─────────────────────────────────────────────────────────
+@app.get("/api/polymarket-signals")
+async def polymarket_signals():
+    return await fetch_polymarket_signals()
+
+
+# ── Chat — multi-provider LLM ─────────────────────────────────────────────
+# Priority: Ollama (local, free) → Groq (free cloud) → Anthropic → error
 
 class ChatRequest(BaseModel):
     question: str
+    history: List[dict] = []   # [{role, content}, ...] for multi-turn
+
+
+def _build_market_context() -> str:
+    ltp = get_latest_ltp() or (_state["today_candles"][-1]["close"] if _state["today_candles"] else "N/A")
+    cpr_d = _state.get("cpr", {}).get("daily", {})
+    ind   = _state.get("indicators", {})
+    gap   = _state.get("gap_info", {})
+    expiry = get_expiry_info()
+    sgx = get_cached_global_markets().get("SGX_NIFTY") or get_cached_global_markets().get("^NSEI", {})
+    recent_signals = [s.get("type") for s in _state.get("signals", [])[:3]]
+
+    return f"""You are an expert Nifty 50 intraday analyst assistant. Be concise (2-4 sentences). Only give analysis, never place orders.
+
+Live market context:
+- NIFTY 50 LTP: {ltp} | Session: {get_session_status()} | Market open: {is_market_open()}
+- Gap: {gap.get('gap_type','N/A')} {gap.get('gap_pct',0):.2f}% | Fill: {gap.get('fill',{}).get('fill_pct','N/A')}%
+- CPR: Pivot={cpr_d.get('pivot','N/A')} BC={cpr_d.get('bc','N/A')} TC={cpr_d.get('tc','N/A')} [{_state.get('cpr',{}).get('cpr_type','N/A')}]
+- Price vs CPR: {_state.get('cpr',{}).get('price_position','N/A')} | Virgin: {_state.get('cpr',{}).get('is_virgin','N/A')}
+- RSI(14): {ind.get('rsi14','N/A')} | VWAP: {ind.get('vwap','N/A')} | Above VWAP: {ind.get('above_vwap','N/A')}
+- EMA 9/21: {ind.get('ema9','N/A')} / {ind.get('ema21','N/A')} | MACD hist: {ind.get('macd_hist','N/A')}
+- ORB-15: {_state.get('orb_15',{}).get('status','N/A') if _state.get('orb_15') else 'N/A'}
+- GIFT Nifty: {sgx.get('price','N/A')} ({sgx.get('change_pct',0):+.2f}%)
+- Expiry: {expiry['expiry_type']} in {expiry['days_to_expiry']} days
+- Recent signals: {recent_signals}"""
+
+
+async def _chat_ollama(system: str, messages: List[dict]) -> tuple[str, str]:
+    url   = os.getenv("OLLAMA_URL", "http://localhost:11434")
+    model = os.getenv("OLLAMA_MODEL", "llama3.1")
+    import httpx
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(f"{url}/api/chat", json={
+            "model": model,
+            "messages": [{"role": "system", "content": system}] + messages,
+            "stream": False,
+            "options": {"temperature": 0.4, "num_predict": 300},
+        })
+        resp.raise_for_status()
+        return resp.json()["message"]["content"], f"ollama/{model}"
+
+
+async def _chat_groq(system: str, messages: List[dict]) -> tuple[str, str]:
+    api_key = os.getenv("GROQ_API_KEY", "")
+    model = "llama-3.1-8b-instant"
+    import httpx
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": model,
+                "messages": [{"role": "system", "content": system}] + messages,
+                "max_tokens": 300,
+                "temperature": 0.4,
+            },
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"], f"groq/{model}"
+
+
+async def _chat_anthropic(system: str, messages: List[dict]) -> tuple[str, str]:
+    import anthropic
+    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
+    msg = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=300,
+        system=system,
+        messages=messages,
+    )
+    return msg.content[0].text, "claude-haiku"
 
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
-    """Answer a market question using Claude with live context."""
-    import os
-    api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return {
-            "answer": "⚠ ANTHROPIC_API_KEY not set in .env — add your key from console.anthropic.com to enable AI chat.",
-            "model": "unavailable",
-        }
+    """Multi-turn market analysis chat. Auto-selects best available free LLM."""
+    system  = _build_market_context()
+    history = req.history[-10:]  # keep last 10 turns to stay within context limits
+    messages = history + [{"role": "user", "content": req.question}]
 
-    try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=api_key)
+    ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
+    groq_key   = os.getenv("GROQ_API_KEY", "")
+    claude_key = os.getenv("ANTHROPIC_API_KEY", "")
 
-        # Build market context snapshot
-        ltp = get_latest_ltp() or (_state["today_candles"][-1]["close"] if _state["today_candles"] else "N/A")
-        cpr_d = _state.get("cpr", {}).get("daily", {})
-        ind = _state.get("indicators", {})
-        gap = _state.get("gap_info", {})
-        expiry = get_expiry_info()
-        global_snap = get_cached_global_markets()
-        sgx = global_snap.get("SGX_NIFTY") or global_snap.get("^NSEI", {})
+    providers = []
+    providers.append(("Ollama", _chat_ollama))
+    if groq_key:
+        providers.append(("Groq", _chat_groq))
+    if claude_key:
+        providers.append(("Claude", _chat_anthropic))
 
-        context = f"""You are an expert Nifty 50 intraday analyst. Answer in 2-4 concise sentences.
+    for name, fn in providers:
+        try:
+            answer, model = await fn(system, messages)
+            return {
+                "answer": answer,
+                "model":  model,
+                "provider": name,
+                "time": datetime.now(IST).strftime("%H:%M:%S"),
+            }
+        except Exception as e:
+            logger.warning(f"Chat provider {name} failed: {e}")
+            continue
 
-Current market snapshot (live):
-- NIFTY 50 LTP: {ltp}
-- Session: {get_session_status()} | Market open: {is_market_open()}
-- Gap: {gap.get('gap_type','N/A')} {gap.get('gap_pct',0):.2f}%
-- CPR: Pivot={cpr_d.get('pivot','N/A')} BC={cpr_d.get('bc','N/A')} TC={cpr_d.get('tc','N/A')}
-- Price position: {_state.get('cpr',{}).get('price_position','N/A')}
-- RSI(14): {ind.get('rsi14','N/A')} | VWAP: {ind.get('vwap','N/A')}
-- MACD hist: {ind.get('macd_hist','N/A')} | Above VWAP: {ind.get('above_vwap','N/A')}
-- SGX/GIFT Nifty: {sgx.get('price','N/A')} ({sgx.get('change_pct',0):+.2f}%)
-- Expiry: {expiry['expiry_type']} in {expiry['days_to_expiry']} days
-- Today's signals: {[s.get('type') for s in _state.get('signals',[])[:3]]}
-
-ANALYSIS ONLY — this bot does not place orders."""
-
-        message = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=256,
-            messages=[
-                {"role": "user", "content": f"{context}\n\nUser question: {req.question}"}
-            ],
-        )
-        answer = message.content[0].text if message.content else "No response."
-        return {
-            "answer": answer,
-            "model": "claude-haiku-4-5",
-            "time": datetime.now(IST).strftime("%H:%M:%S"),
-        }
-
-    except Exception as e:
-        logger.error(f"Chat error: {e}", exc_info=True)
-        return {"answer": f"Error: {str(e)}", "model": "error"}
+    return {
+        "answer": "No LLM available. Ollama is not running — start it with `ollama serve`, or add GROQ_API_KEY to .env (free at groq.com).",
+        "model": "none",
+        "provider": "none",
+    }
 
 
 # ── Backtest ───────────────────────────────────────────────────────────────
@@ -450,7 +587,7 @@ async def backtest(req: BacktestRequest):
 @app.get("/api/dashboard")
 async def dashboard_summary():
     """Single endpoint returning everything needed for initial dashboard load."""
-    await _refresh_state()
+    await _refresh_state()   # respects 55s cooldown — won't hammer historical API
     global_data = get_cached_global_markets()
 
     expiry = get_expiry_info()

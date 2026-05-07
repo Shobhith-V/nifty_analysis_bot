@@ -3,9 +3,13 @@ function BottomStrip() {
   const [chatLog, setChatLog] = React.useState(AI_LOG);
   const [chatInput, setChatInput] = React.useState('');
   const [chatLoading, setChatLoading] = React.useState(false);
-  const chatEndRef = React.useRef(null);
+  const [chatModel, setChatModel] = React.useState('');
+  // Conversation history for multi-turn (OpenAI format)
+  const chatHistory = React.useRef([]);
 
   const API_BASE = (window.location.port === '8000' || window.location.port === '') ? '' : 'http://localhost:8000';
+
+  const ts = () => { const d = new Date(); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`; };
 
   const askBot = async () => {
     const q = chatInput.trim();
@@ -13,28 +17,29 @@ function BottomStrip() {
     setChatInput('');
     setChatLoading(true);
 
-    // Optimistic user message
-    const now = new Date();
-    const ts = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}`;
-    setChatLog(prev => [{ t: ts, msg: `You: ${q}`, isUser: true }, ...prev]);
+    const t = ts();
+    setChatLog(prev => [{ t, msg: q, isUser: true }, ...prev]);
+    chatHistory.current.push({ role: 'user', content: q });
 
     try {
       const res = await fetch(`${API_BASE}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: q }),
+        body: JSON.stringify({ question: q, history: chatHistory.current.slice(-10) }),
       }).then(r => r.json());
 
-      const ts2 = new Date();
-      const ts2s = `${String(ts2.getHours()).padStart(2,'0')}:${String(ts2.getMinutes()).padStart(2,'0')}:${String(ts2.getSeconds()).padStart(2,'0')}`;
-      setChatLog(prev => [{ t: ts2s, msg: res.answer || 'No response', isBot: true }, ...prev]);
+      const answer = res.answer || 'No response.';
+      chatHistory.current.push({ role: 'assistant', content: answer });
+      setChatModel(res.model || '');
+      setChatLog(prev => [{ t: ts(), msg: answer, isBot: true }, ...prev]);
     } catch (e) {
-      setChatLog(prev => [{ t: ts, msg: '⚠ Chat unavailable — is the backend running?', isErr: true }, ...prev]);
+      setChatLog(prev => [{ t, msg: '⚠ Chat unavailable — is the backend running?', isErr: true }, ...prev]);
     }
     setChatLoading(false);
   };
 
-  const onKey = e => { if (e.key === 'Enter') askBot(); };
+  const clearChat = () => { chatHistory.current = []; setChatLog(AI_LOG); };
+  const onKey = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); askBot(); } };
 
   return (
     <div style={{
@@ -47,13 +52,14 @@ function BottomStrip() {
       <div className="panel-flush" style={{ borderRight: '1px solid var(--hairline)', display: 'flex', flexDirection: 'column' }}>
         <div className="panel-h">
           <div className="lhs">
-            <span className="num">α</span><span>AI Commentary</span>
-            <Chip tone="cyan">claude-haiku</Chip>
+            <span className="num">α</span><span>AI Chat</span>
+            {chatModel && <Chip tone="cyan">{chatModel}</Chip>}
           </div>
           <div className="rhs">
             {chatLoading
               ? <span className="mono" style={{ fontSize: 9, color: 'var(--cyan)' }}>⟳ thinking…</span>
-              : <span><span className="dot" />LIVE</span>}
+              : <><span><span className="dot" />LIVE</span>
+                 <button className="btn sm" style={{ padding: '0 6px', fontSize: 9 }} onClick={clearChat}>clear</button></>}
           </div>
         </div>
         <div style={{ flex: 1, overflow: 'auto', padding: '6px 10px' }}>

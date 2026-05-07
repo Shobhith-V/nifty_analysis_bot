@@ -116,26 +116,33 @@ _aggregator = CandleAggregator(interval_seconds=60)
 def _parse_tick(raw_data: dict) -> Optional[Dict]:
     """Parse raw SmartWebSocketV2 tick into normalized format."""
     try:
+        if not isinstance(raw_data, dict):
+            return None
+
         token = str(raw_data.get("token", ""))
-        ltp = raw_data.get("last_traded_price", raw_data.get("ltp", 0))
-        # SmartAPI sends prices in paise for some fields — divide by 100
-        if ltp and ltp > 1000000:
+        ltp = raw_data.get("last_traded_price", raw_data.get("ltp", 0)) or 0
+        # SmartAPI sends prices in paise for equity — divide by 100
+        if ltp > 100_000:
             ltp = ltp / 100
 
+        # best_5 lists can be empty — use `or [{}]` to handle both None and []
+        buy_list  = raw_data.get("best_5_buy_data")  or [{}]
+        sell_list = raw_data.get("best_5_sell_data") or [{}]
+
         return {
-            "token": token,
-            "time": raw_data.get("exchange_timestamp", time.time()),
-            "ltp": float(ltp),
-            "open": float(raw_data.get("open_price_of_the_day", 0) or 0) / 100,
-            "high": float(raw_data.get("high_price_of_the_day", 0) or 0) / 100,
-            "low": float(raw_data.get("low_price_of_the_day", 0) or 0) / 100,
-            "close": float(raw_data.get("closed_price", 0) or 0) / 100,
+            "token":  token,
+            "time":   raw_data.get("exchange_timestamp", time.time()),
+            "ltp":    float(ltp),
+            "open":   float(raw_data.get("open_price_of_the_day",  0) or 0) / 100,
+            "high":   float(raw_data.get("high_price_of_the_day",  0) or 0) / 100,
+            "low":    float(raw_data.get("low_price_of_the_day",   0) or 0) / 100,
+            "close":  float(raw_data.get("closed_price",           0) or 0) / 100,
             "volume": int(raw_data.get("volume_trade_for_the_day", 0) or 0),
-            "bid": float(raw_data.get("best_5_buy_data", [{}])[0].get("price", 0) or 0) / 100,
-            "ask": float(raw_data.get("best_5_sell_data", [{}])[0].get("price", 0) or 0) / 100,
+            "bid":    float(buy_list[0].get("price",  0) or 0) / 100,
+            "ask":    float(sell_list[0].get("price", 0) or 0) / 100,
         }
     except Exception as e:
-        logger.warning(f"Failed to parse tick: {e}")
+        logger.warning(f"Failed to parse tick: {e} | data keys: {list(raw_data.keys()) if isinstance(raw_data, dict) else type(raw_data)}")
         return None
 
 
