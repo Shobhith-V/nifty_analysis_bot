@@ -116,37 +116,67 @@ function BottomStrip() {
               </div>
             );
           })}
-          {tab === 'p' && (window.POLY_LIVE && window.POLY_LIVE.length ? window.POLY_LIVE : POLY).map((p, i) => (
-            <div key={i} style={{ padding: '10px', borderBottom: '1px solid var(--hairline-soft)' }}>
-              <div style={{ fontSize: 11, color: 'var(--fg-2)', marginBottom: 6, lineHeight: 1.4 }}>{p.q}</div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <div style={{ flex: 1, position: 'relative', height: 18, background: 'var(--bg-2)', border: '1px solid var(--hairline-soft)', borderRadius: 2, overflow: 'hidden' }}>
-                  <div style={{ position: 'absolute', inset: 0, width: `${p.yes}%`, background: 'oklch(0.74 0.16 145 / 0.25)' }} />
-                  <div className="mono" style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 6px', fontSize: 10 }}>
-                    <span style={{ color: 'var(--green)' }}>YES {p.yes}¢</span>
-                    <span style={{ color: 'var(--red)' }}>NO {100-p.yes}¢</span>
+          {tab === 'p' && (() => {
+            const items = window.POLY_LIVE && window.POLY_LIVE.length ? window.POLY_LIVE : POLY;
+            return items.map((p, i) => (
+              <div key={i}
+                onClick={() => p.url && window.open(p.url, '_blank')}
+                style={{ padding: '8px 10px', borderBottom: '1px solid var(--hairline-soft)',
+                  cursor: p.url ? 'pointer' : 'default' }}>
+                {p.cat && (
+                  <div className="mono" style={{ fontSize: 8, color: 'var(--dim-2)', letterSpacing: '0.1em', marginBottom: 3 }}>
+                    {p.cat.toUpperCase()}
                   </div>
+                )}
+                <div style={{ fontSize: 11, color: 'var(--fg-2)', marginBottom: 5, lineHeight: 1.4 }}>{p.q}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ flex: 1, position: 'relative', height: 18, background: 'var(--bg-2)',
+                    border: '1px solid var(--hairline-soft)', borderRadius: 2, overflow: 'hidden' }}>
+                    <div style={{ position: 'absolute', inset: 0, width: `${p.yes}%`,
+                      background: p.yes > 50 ? 'oklch(0.74 0.16 145 / 0.2)' : 'oklch(0.68 0.20 27 / 0.15)' }} />
+                    <div className="mono" style={{ position: 'absolute', inset: 0, display: 'flex',
+                      alignItems: 'center', justifyContent: 'space-between', padding: '0 6px', fontSize: 10 }}>
+                      <span style={{ color: 'var(--green)' }}>YES {p.yes}¢</span>
+                      <span style={{ color: 'var(--red)' }}>NO {100 - p.yes}¢</span>
+                    </div>
+                  </div>
+                  <span className="mono" style={{ fontSize: 9, color: 'var(--dim)' }}>{p.vol}</span>
+                  {p.url && <span style={{ fontSize: 9, color: 'var(--dim-2)' }}>↗</span>}
                 </div>
-                <span className="mono" style={{ fontSize: 9, color: 'var(--dim)' }}>{p.vol}</span>
               </div>
-            </div>
-          ))}
-          {tab === 'cal' && (
-            <div style={{ padding: 10 }}>
-              {[
-                ['Today 15:30', 'Weekly F&O Expiry', 'amber'],
-                ['Tomorrow', 'CPI Inflation Data', 'amber'],
-                ['Fri 18:00', 'Fed Minutes (US)', 'cyan'],
-                ['Mon', 'Q2 GDP Release', 'cyan'],
-              ].map(([t, ev, c], i) => (
-                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--hairline-soft)' }}>
-                  <span className="mono" style={{ fontSize: 10, color: 'var(--dim)' }}>{t}</span>
-                  <span style={{ fontSize: 11, color: 'var(--fg-2)' }}>{ev}</span>
-                  <Chip tone={c}>{c === 'amber' ? 'HIGH' : 'MED'}</Chip>
-                </div>
-              ))}
-            </div>
-          )}
+            ));
+          })()}
+          {tab === 'cal' && (() => {
+            const eco = window.ECONOMIC_CALENDAR || [];
+            const expiry = window.EXPIRY_INFO || {};
+            // Build rows: expiry first, then economic events
+            const rows = [];
+            if (expiry.next_expiry) {
+              const label = expiry.is_today_expiry ? 'Today 15:30'
+                : expiry.days_to_expiry === 1 ? 'Tomorrow 15:30'
+                : `${expiry.next_expiry} 15:30`;
+              rows.push({ t: label, ev: `${expiry.expiry_type} F&O Expiry`, tone: expiry.days_to_expiry <= 2 ? 'amber' : 'cyan', impact: 'HIGH' });
+            }
+            eco.forEach(e => {
+              const t = e.today ? 'Today' : e.days_away === 1 ? 'Tomorrow' : `In ${e.days_away}d`;
+              rows.push({ t, ev: e.event, tone: e.impact === 'HIGH' ? 'amber' : 'cyan', impact: e.impact });
+            });
+            if (!rows.length) rows.push(
+              { t: 'Loading…', ev: 'Economic calendar', tone: 'default', impact: '—' }
+            );
+            return (
+              <div style={{ padding: 10 }}>
+                {rows.map((r, i) => (
+                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                    padding: '7px 0', borderBottom: '1px solid var(--hairline-soft)', gap: 8 }}>
+                    <span className="mono" style={{ fontSize: 10, color: 'var(--dim)', minWidth: 80 }}>{r.t}</span>
+                    <span style={{ fontSize: 11, color: 'var(--fg-2)', flex: 1 }}>{r.ev}</span>
+                    <Chip tone={r.tone}>{r.impact}</Chip>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
         </div>
       </div>
 

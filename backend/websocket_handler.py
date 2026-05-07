@@ -125,13 +125,21 @@ def _parse_tick(raw_data: dict) -> Optional[Dict]:
         if ltp > 100_000:
             ltp = ltp / 100
 
+        # SmartWebSocketV2 exchange_timestamp is in MILLISECONDS.
+        # Normalise to seconds so CandleAggregator's (ts % 60) works correctly.
+        ts_raw = raw_data.get("exchange_timestamp")
+        if ts_raw is not None:
+            ts_s = float(ts_raw) / 1000 if float(ts_raw) > 1e11 else float(ts_raw)
+        else:
+            ts_s = time.time()
+
         # best_5 lists can be empty — use `or [{}]` to handle both None and []
         buy_list  = raw_data.get("best_5_buy_data")  or [{}]
         sell_list = raw_data.get("best_5_sell_data") or [{}]
 
         return {
             "token":  token,
-            "time":   raw_data.get("exchange_timestamp", time.time()),
+            "time":   ts_s,        # always seconds from here on
             "ltp":    float(ltp),
             "open":   float(raw_data.get("open_price_of_the_day",  0) or 0) / 100,
             "high":   float(raw_data.get("high_price_of_the_day",  0) or 0) / 100,

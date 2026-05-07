@@ -264,6 +264,7 @@ Object.assign(window, {
   RSI, RSI_NOW, MACD_LINE, MACD_SIGNAL, MACD_HIST,
   BIAS_SCORE, BIAS_LABEL, SIGNALS, GLOBAL_MARKETS, NEWS, POLY, AI_LOG,
   CHECKLIST, BACKTEST, DSL_TEXT,
+  LIVE_CANDLE: null,   // populated by WebSocket ticks; separate from closed CANDLES
 });
 
 // ─── Live API integration ──────────────────────────────────────────────────
@@ -353,11 +354,17 @@ Object.assign(window, {
           });
         }
 
-        // Bias
+        // Bias (with confidence + factors for right rail)
         if (dashboard.bias) {
-          window.BIAS_LABEL = dashboard.bias.bias || window.BIAS_LABEL;
-          // Map score (-10..+10) to gauge value (0..10)
-          window.BIAS_SCORE = Math.min(10, Math.abs(dashboard.bias.score) * 1.5) || window.BIAS_SCORE;
+          window.BIAS_LABEL      = dashboard.bias.bias       || window.BIAS_LABEL;
+          window.BIAS_SCORE      = Math.min(10, Math.abs(dashboard.bias.score) * 1.5) || window.BIAS_SCORE;
+          window.BIAS_CONFIDENCE = dashboard.bias.confidence ?? 0;
+          window.BIAS_FACTORS    = dashboard.bias.factors    || [];
+        }
+
+        // Expiry info (for options panel + events tab)
+        if (dashboard.expiry) {
+          window.EXPIRY_INFO = dashboard.expiry;
         }
 
         // Global markets → convert dict to array
@@ -408,36 +415,43 @@ Object.assign(window, {
 
         if (msg.type === 'tick' && msg.data && msg.data.ltp > 0) {
           window.LTP = msg.data.ltp;
+
+          // Store the live (open) candle SEPARATELY — never in window.CANDLES.
+          // window.CANDLES = only closed bars.
+          // window.LIVE_CANDLE = the single currently-open bar (from WebSocket).
           if (msg.data.live_candle) {
             const lc = msg.data.live_candle;
             const tMs = lc.time * 1000;
-            const last = window.CANDLES[window.CANDLES.length - 1];
-            if (last && last.t === tMs) {
-              // Update current open candle in-place
-              window.CANDLES[window.CANDLES.length - 1] = {
-                ...last, h: Math.max(last.h, lc.high), l: Math.min(last.l, lc.low),
-                c: lc.close, v: lc.volume,
-              };
-            }
-            window.LATEST = window.CANDLES[window.CANDLES.length - 1];
+            const ts = new Date(tMs);
+            window.LIVE_CANDLE = {
+              t:    tMs,
+              tStr: `${String(ts.getHours()).padStart(2,'0')}:${String(ts.getMinutes()).padStart(2,'0')}`,
+              o: lc.open,
+              h: Math.max(lc.high, window.LTP),
+              l: Math.min(lc.low,  window.LTP),
+              c: window.LTP,
+              v: lc.volume,
+            };
           }
           document.dispatchEvent(new CustomEvent('nifty-tick'));
 
         } else if (msg.type === 'candle_closed' && msg.data) {
+          // Candle has CLOSED → move it into window.CANDLES, clear LIVE_CANDLE
           const lc = msg.data;
           const tMs = lc.time * 1000;
           const ts = new Date(tMs);
-          const newC = {
-            t: tMs,
+          const closed = {
+            t:    tMs,
             tStr: `${String(ts.getHours()).padStart(2,'0')}:${String(ts.getMinutes()).padStart(2,'0')}`,
             o: lc.open, h: lc.high, l: lc.low, c: lc.close, v: lc.volume,
           };
-          const idx = window.CANDLES.findIndex(c => c.t === tMs);
+          const idx = (window.CANDLES || []).findIndex(c => c.t === tMs);
           if (idx >= 0) {
-            const arr = [...window.CANDLES]; arr[idx] = newC; window.CANDLES = arr;
+            const arr = [...window.CANDLES]; arr[idx] = closed; window.CANDLES = arr;
           } else {
-            window.CANDLES = [...window.CANDLES, newC];
+            window.CANDLES = [...(window.CANDLES || []), closed];
           }
+          window.LIVE_CANDLE = null;  // next tick will populate it for the new minute
           window.LATEST = window.CANDLES[window.CANDLES.length - 1];
           document.dispatchEvent(new CustomEvent('nifty-candle'));
         }
@@ -480,8 +494,10 @@ Object.assign(window, {
           });
         }
         if (signals.bias) {
-          window.BIAS_LABEL = signals.bias.bias || window.BIAS_LABEL;
-          window.BIAS_SCORE = Math.min(10, Math.abs(signals.bias.score) * 1.5) || window.BIAS_SCORE;
+          window.BIAS_LABEL      = signals.bias.bias       || window.BIAS_LABEL;
+          window.BIAS_SCORE      = Math.min(10, Math.abs(signals.bias.score) * 1.5) || window.BIAS_SCORE;
+          window.BIAS_CONFIDENCE = signals.bias.confidence ?? window.BIAS_CONFIDENCE ?? 0;
+          window.BIAS_FACTORS    = signals.bias.factors    || window.BIAS_FACTORS    || [];
         }
         if (signals.indicators && signals.indicators.price != null) {
           window.LTP     = signals.indicators.price || window.LTP;
@@ -505,6 +521,11 @@ Object.assign(window, {
         fetch(`${API_BASE}/api/news`).then(r => r.json()).catch(() => null),
         fetch(`${API_BASE}/api/polymarket`).then(r => r.json()).catch(() => null),
       ]);
+
+      // ── Economic calendar (for Events tab) ───────────────
+      if (news && Array.isArray(news.economic_calendar)) {
+        window.ECONOMIC_CALENDAR = news.economic_calendar;
+      }
 
       // ── News ─────────────────────────────────────────────
       // Backend may return either an array of items or { items: [...] }

@@ -87,19 +87,27 @@ function Chart() {
   // ── Aggregated candle state ─────────────────────────────────────────────
   const [aggCandles, setAggCandles] = React.useState(() => window.CANDLES || CANDLES);
 
+  // Build the full data source: closed candles + current open candle
+  const getBase = () => {
+    const closed = window.CANDLES || CANDLES;
+    const live   = window.LIVE_CANDLE;
+    if (!live) return closed;
+    // Guard: don't double-count if the live candle's time is already the last closed bar
+    const last = closed[closed.length - 1];
+    if (last && last.t === live.t) return closed;
+    return [...closed, live];
+  };
+
   const reAggregate = React.useCallback(() => {
-    const base = window.CANDLES || CANDLES;
+    const base = getBase();
     const mins = INTERVAL_MINS[intervalSel] || 1;
     setAggCandles(aggregate(base, mins));
-  }, [intervalSel]);
+  }, [intervalSel]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Re-aggregate on interval change or fresh data
+  // Re-aggregate when interval changes or on initial load / candle close events
   React.useEffect(() => { reAggregate(); }, [reAggregate]);
 
   React.useEffect(() => {
-    // Full re-aggregate from window.CANDLES on:
-    //  - initial data load (nifty-data-ready)
-    //  - candle close from backend (nifty-candle) — locks in the closed bar
     document.addEventListener('nifty-data-ready', reAggregate);
     document.addEventListener('nifty-candle',     reAggregate);
     return () => {
@@ -108,75 +116,25 @@ function Chart() {
     };
   }, [reAggregate]);
 
-  // Tick: update the LIVE (last) candle only.
-  // Throttled to one React render per 500 ms so the chart doesn't flicker on every tick.
-  // Also detects when a new candle minute has started and adds the new bar instead of
-  // stamping the new price onto the just-closed bar.
+  // Tick: window.LIVE_CANDLE was updated — re-aggregate to show updated live bar.
+  // Throttled to once per second: LIVE_CANDLE.time is now stable within the same
+  // minute (backend normalises exchange_timestamp to seconds before modulo 60),
+  // so getBase() returns the same-length array and only the last bar's H/L/C update.
   React.useEffect(() => {
-    const pendingRef   = { current: null };     // setTimeout handle
-    const intervalRef  = { current: intervalSel }; // keep intervalSel fresh without stale closure
-
-    // Re-read intervalSel from the DOM via a ref whenever the effect re-runs
-    intervalRef.current = intervalSel;
-
-    const flush = () => {
-      pendingRef.current = null;
-
-      const ltp = window.LTP;
-      if (!ltp || ltp <= 0) return;
-
-      const liveCandle = window.LATEST;         // updated by data.jsx on every tick
-      const liveT = liveCandle?.t ?? null;      // ms timestamp of live candle
-
-      setAggCandles(prev => {
-        if (!prev.length) return prev;
-        const last = prev[prev.length - 1];
-        const mins = INTERVAL_MINS[intervalRef.current] || 1;
-
-        // Detect whether the tick belongs to a NEW candle bucket
-        let inNewBucket = false;
-        if (liveT != null) {
-          const d0 = new Date(last.t); d0.setHours(9, 15, 0, 0);
-          const session0  = d0.getTime();
-          const msPerBar  = mins * 60000;
-          const lastSlot  = session0 + Math.floor((last.t  - session0) / msPerBar) * msPerBar;
-          const liveSlot  = session0 + Math.floor((liveT   - session0) / msPerBar) * msPerBar;
-          inNewBucket = liveSlot > lastSlot;
-        }
-
-        if (inNewBucket && liveCandle) {
-          // A new bar has started — append it rather than overwriting the closed bar
-          const ts = new Date(liveT);
-          const newBar = {
-            t:    liveT,
-            tStr: `${String(ts.getHours()).padStart(2,'0')}:${String(ts.getMinutes()).padStart(2,'0')}`,
-            o: liveCandle.o, h: Math.max(liveCandle.h, ltp),
-            l: Math.min(liveCandle.l, ltp), c: ltp, v: liveCandle.v || 0,
-          };
-          return [...prev, newBar];
-        }
-
-        // Same bar — update H/L/C in place
-        const updated = { ...last,
-          h: Math.max(last.h, ltp),
-          l: Math.min(last.l, ltp),
-          c: ltp,
-        };
-        return [...prev.slice(0, -1), updated];
-      });
-    };
-
+    const pending = { current: null };
     const onTick = () => {
-      if (pendingRef.current) return;           // already scheduled
-      pendingRef.current = setTimeout(flush, 500); // batch: max 2 renders/sec
+      if (pending.current) return;
+      pending.current = setTimeout(() => {
+        pending.current = null;
+        reAggregate();
+      }, 1000);  // at most 1 render/sec from ticks
     };
-
     document.addEventListener('nifty-tick', onTick);
     return () => {
       document.removeEventListener('nifty-tick', onTick);
-      if (pendingRef.current) clearTimeout(pendingRef.current);
+      if (pending.current) clearTimeout(pending.current);
     };
-  }, [intervalSel]); // re-bind when interval changes so intervalRef stays fresh
+  }, [reAggregate]);
 
   // ── Pan + zoom state ────────────────────────────────────────────────────
   const N = aggCandles.length;

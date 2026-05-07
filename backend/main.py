@@ -448,27 +448,49 @@ class ChatRequest(BaseModel):
 
 
 def _build_market_context() -> str:
-    ltp = get_latest_ltp() or (_state["today_candles"][-1]["close"] if _state["today_candles"] else "N/A")
-    cpr_d = _state.get("cpr", {}).get("daily", {})
-    ind   = _state.get("indicators", {})
-    gap   = _state.get("gap_info", {})
+    ltp = get_latest_ltp() or (_state["today_candles"][-1]["close"] if _state["today_candles"] else None)
+    ltp_val = float(ltp) if ltp else 0
+    cpr_d  = _state.get("cpr", {}).get("daily", {})
+    ind    = _state.get("indicators", {})
+    gap    = _state.get("gap_info", {})
     expiry = get_expiry_info()
-    sgx = get_cached_global_markets().get("SGX_NIFTY") or get_cached_global_markets().get("^NSEI", {})
-    recent_signals = [s.get("type") for s in _state.get("signals", [])[:3]]
+    gm     = get_cached_global_markets()
+    sgx    = gm.get("SGX_NIFTY") or gm.get("^NSEI", {})
+    vix    = gm.get("^VIX", {})
+    recent_signals = [s.get("type") for s in _state.get("signals", [])[:4]]
 
-    return f"""You are an expert Nifty 50 intraday analyst assistant. Be concise (2-4 sentences). Only give analysis, never place orders.
+    # Options-specific derived values
+    atm_strike = round(ltp_val / 50) * 50 if ltp_val else "N/A"
+    orb15 = _state.get("orb_15") or {}
+    orb_status = orb15.get("status", "N/A")
 
-Live market context:
-- NIFTY 50 LTP: {ltp} | Session: {get_session_status()} | Market open: {is_market_open()}
-- Gap: {gap.get('gap_type','N/A')} {gap.get('gap_pct',0):.2f}% | Fill: {gap.get('fill',{}).get('fill_pct','N/A')}%
-- CPR: Pivot={cpr_d.get('pivot','N/A')} BC={cpr_d.get('bc','N/A')} TC={cpr_d.get('tc','N/A')} [{_state.get('cpr',{}).get('cpr_type','N/A')}]
-- Price vs CPR: {_state.get('cpr',{}).get('price_position','N/A')} | Virgin: {_state.get('cpr',{}).get('is_virgin','N/A')}
-- RSI(14): {ind.get('rsi14','N/A')} | VWAP: {ind.get('vwap','N/A')} | Above VWAP: {ind.get('above_vwap','N/A')}
-- EMA 9/21: {ind.get('ema9','N/A')} / {ind.get('ema21','N/A')} | MACD hist: {ind.get('macd_hist','N/A')}
-- ORB-15: {_state.get('orb_15',{}).get('status','N/A') if _state.get('orb_15') else 'N/A'}
-- GIFT Nifty: {sgx.get('price','N/A')} ({sgx.get('change_pct',0):+.2f}%)
-- Expiry: {expiry['expiry_type']} in {expiry['days_to_expiry']} days
-- Recent signals: {recent_signals}"""
+    return f"""You are an expert Nifty 50 intraday options analyst. Answer in 2-4 concise sentences.
+Focus on actionable analysis — which option to consider (CE/PE), strike, risk context.
+ANALYSIS ONLY — never place orders, never give financial advice with guarantee.
+
+=== LIVE MARKET SNAPSHOT ===
+NIFTY 50 LTP : {ltp_val:.2f} | ATM Strike : {atm_strike}
+Session      : {get_session_status()} | Market open: {is_market_open()}
+Gap          : {gap.get('gap_type','N/A')} {gap.get('gap_pct',0):.2f}% | Fill: {gap.get('fill',{}).get('fill_pct','N/A')}%
+
+=== CPR ===
+Pivot={cpr_d.get('pivot','N/A')} | BC={cpr_d.get('bc','N/A')} | TC={cpr_d.get('tc','N/A')} [{_state.get('cpr',{}).get('cpr_type','N/A')}]
+Price vs CPR : {_state.get('cpr',{}).get('price_position','N/A')} | Virgin CPR: {_state.get('cpr',{}).get('is_virgin','N/A')}
+R1={cpr_d.get('r1','N/A')} R2={cpr_d.get('r2','N/A')} | S1={cpr_d.get('s1','N/A')} S2={cpr_d.get('s2','N/A')}
+
+=== TECHNICALS ===
+RSI(14)={ind.get('rsi14','N/A')} | VWAP={ind.get('vwap','N/A')} | Above VWAP: {ind.get('above_vwap','N/A')}
+EMA 9={ind.get('ema9','N/A')} EMA 21={ind.get('ema21','N/A')} | MACD hist={ind.get('macd_hist','N/A')}
+ORB-15: {orb_status} | ORB H={orb15.get('orb_high','N/A')} L={orb15.get('orb_low','N/A')}
+
+=== EXPIRY & VOLATILITY ===
+Expiry: {expiry['expiry_type']} on {expiry['next_expiry']} ({expiry['days_to_expiry']} days away)
+{'⚠ EXPIRY DAY — expect elevated IV and pin risk' if expiry['is_today_expiry'] else ''}
+VIX (India proxy): {vix.get('price','N/A')} ({vix.get('change_pct',0):+.2f}%)
+GIFT Nifty: {sgx.get('price','N/A')} ({sgx.get('change_pct',0):+.2f}%)
+
+=== SIGNALS ===
+{recent_signals}"""
 
 
 async def _chat_ollama(system: str, messages: List[dict]) -> tuple[str, str]:
